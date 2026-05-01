@@ -11,6 +11,8 @@
         href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <!-- Supabase JS Client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 
 <body>
@@ -52,7 +54,33 @@
             <section class="url-section" id="urlSection">
                 <div class="url-container">
                     <h1 class="title">Stream Any Video</h1>
-                    <p class="subtitle">Paste a direct video URL for instant, buffer-free playback</p>
+                    <p class="subtitle">Search your library or paste a direct video URL for instant playback</p>
+
+                    <!-- Movie Search Section -->
+                    <div class="movie-search-section">
+                        <div class="search-bar-wrapper">
+                            <svg class="search-icon" viewBox="0 0 24 24" fill="none">
+                                <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+                                <path d="M16.5 16.5L21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                            <input type="text" id="movieSearch" class="movie-search-input" placeholder="Search movies by title..." autocomplete="off" spellcheck="false">
+                            <div class="search-spinner" id="searchSpinner"></div>
+                            <button class="add-movie-btn" id="addMovieBtn" title="Add Movie to Library">
+                                <svg viewBox="0 0 24 24" fill="none">
+                                    <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                                </svg>
+                                <span>Add Movie</span>
+                            </button>
+                        </div>
+                        <!-- Search Results Dropdown -->
+                        <div class="search-results" id="searchResults"></div>
+                    </div>
+
+                    <div class="divider-row">
+                        <div class="divider-line"></div>
+                        <span class="divider-text">or paste URL directly</span>
+                        <div class="divider-line"></div>
+                    </div>
 
                     <div class="url-input-wrapper">
                         <div class="url-input-bg"></div>
@@ -309,9 +337,50 @@
                 <button class="close-shortcuts" id="closeShortcuts">Got it</button>
             </div>
         </div>
+
+        <!-- Add Movie Modal -->
+        <div class="modal-backdrop" id="addMovieModal">
+            <div class="modal-card">
+                <div class="modal-header">
+                    <div class="modal-title-row">
+                        <svg viewBox="0 0 24 24" fill="none" class="modal-icon">
+                            <rect x="2" y="3" width="20" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+                            <path d="M7 3v18M17 3v18M2 9h20M2 15h20" stroke="currentColor" stroke-width="1.5"/>
+                        </svg>
+                        <h2>Add Movie to Library</h2>
+                    </div>
+                    <button class="modal-close" id="modalClose">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label" for="movieTitle">Movie Title</label>
+                        <input type="text" id="movieTitle" class="form-input" placeholder="e.g. Interstellar (2014) – 1080p" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="movieLink">Video Link</label>
+                        <input type="url" id="movieLink" class="form-input" placeholder="https://example.com/video.mp4" autocomplete="off">
+                    </div>
+                    <div class="modal-status" id="modalStatus"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-cancel" id="modalCancelBtn">Cancel</button>
+                    <button class="btn-save" id="modalSaveBtn">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <span>Save to Library</span>
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="player.js"></script>
+    <script src="supabase-movies.js"></script>
 </body>
 
 </html>
