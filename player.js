@@ -2,6 +2,7 @@
  * StreamFlow Video Player
  * High-quality streaming video player with smart buffering
  */
+import WebTorrent from './webtorrent.min.js';
 
 class StreamFlowPlayer {
     constructor() {
@@ -56,6 +57,8 @@ class StreamFlowPlayer {
         // Stats
         this.bufferPercent = document.getElementById('bufferPercent');
         this.networkSpeed = document.getElementById('networkSpeed');
+        this.networkPeers = document.getElementById('networkPeers');
+        this.peersStat = document.getElementById('peersStat');
 
         // Shortcuts Modal
         this.shortcutsModal = document.getElementById('shortcutsModal');
@@ -89,13 +92,35 @@ class StreamFlowPlayer {
         this.supportsRangeRequests = null; // null = unknown, true/false after check
         this.rangeRequestChecked = false;
 
+        // WebTorrent State
+        this.torrentClient = new WebTorrent();
+        this.activeTorrent = null;
+        this.isTorrentMode = false;  // flag to suppress HTTP-specific player logic
+        this.activeBlobURL = null;   // track blob URL for cleanup
+
         this.init();
     }
 
-    init() {
+    async init() {
         this.bindEvents();
         this.setupVideoEvents();
         this.updateVolumeUI();
+
+        // Register WebTorrent Service Worker for true streaming
+        if ('serviceWorker' in navigator && this.torrentClient) {
+            try {
+                const reg = await navigator.serviceWorker.register('./sw.min.js', { scope: './' });
+                await navigator.serviceWorker.ready;
+
+                // Initialize the WebTorrent HTTP proxy via the Service Worker
+                this.torrentClient.createServer({ controller: reg });
+                console.log('✅ WebTorrent Service Worker registered for true streaming');
+                this.hasServiceWorker = true;
+            } catch (err) {
+                console.warn('⚠️ WebTorrent Service Worker failed. Streams may fallback to Blob:', err);
+                this.hasServiceWorker = false;
+            }
+        }
 
         // Focus input on load
         this.urlInput.focus();
@@ -253,10 +278,13 @@ class StreamFlowPlayer {
 
             this.durationEl.textContent = this.formatTime(this.video.duration);
             this.hideLoading();
-            // Start buffer management once we have metadata
-            this.startBufferManagement();
-            // Initialize speed status
-            this.updateSpeedStatus();
+
+            // For standard videos, use custom buffer management and speed UI
+            // For torrents, WebTorrent handles this internally and custom logic conflicts
+            if (!this.activeTorrent) {
+                this.startBufferManagement();
+                this.updateSpeedStatus();
+            }
 
             console.log(`Video loaded: ${this.formatTime(this.video.duration)} duration`);
         });
@@ -323,6 +351,45 @@ class StreamFlowPlayer {
         let url = this.urlInput.value.trim();
         if (!url) {
             this.urlInput.focus();
+            return;
+        }
+
+        // --- Robust Torrent Cleanup ---
+        // If a previous torrent is running, aggressively destroy it to free memory and WebRTC connections
+        if (this.activeTorrent && this.torrentClient) {
+            console.log(`🧹 Destroying previous torrent: ${this.activeTorrent.infoHash}`);
+            this.torrentClient.remove(this.activeTorrent, { destroyStore: true });
+            this.activeTorrent = null;
+        }
+        if (this.activeBlobURL) {
+            URL.revokeObjectURL(this.activeBlobURL);
+            this.activeBlobURL = null;
+        }
+        // If switching from torrent mode: remove the freshVideo and restore original
+        if (this.isTorrentMode) {
+            if (this.video && this.video !== this._torrentOriginalVideo && this.video.parentNode) {
+                this.video.pause();
+                this.video.src = '';
+                this.video.parentNode.removeChild(this.video);
+            }
+            this._restoreOriginalVideo();
+        }
+
+        // Intercept Torrent Links (Magnet URI or .torrent files)
+        const isTorrent = url.startsWith('magnet:') || url.endsWith('.torrent');
+        if (isTorrent && this.torrentClient) {
+            this.currentUrl = url;
+            this.originalUrl = url;
+            this.hideError();
+            this.showPlayerSection();
+            this.showLoading();
+
+            this.loadTorrent(url);
+
+            // Update URL params
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('url', encodeURIComponent(url));
+            window.history.replaceState({}, '', newUrl);
             return;
         }
 
@@ -409,6 +476,116 @@ class StreamFlowPlayer {
             }
         }, 10000); // 10 second timeout
     }
+
+    loadTorrent(torrentId) {
+        this.isTorrentMode = true;
+
+        // Update P2P stats UI
+        if (this.peersStat) this.peersStat.style.display = 'flex';
+        if (this.networkPeers) this.networkPeers.textContent = '0';
+        if (this.bufferPercent) this.bufferPercent.textContent = 'Fetching metadata...';
+        if (this.networkSpeed) {
+            this.networkSpeed.textContent = 'Looking for peers...';
+            this.networkSpeed.style.color = 'var(--text-tertiary)';
+        }
+        this.showLoading();
+
+        // Metadata timeout — fires if we can't find any WebRTC peers
+        const metadataTimeout = setTimeout(() => {
+            if (!this.activeTorrent || !this.activeTorrent.metadata) {
+                this.isTorrentMode = false;
+                this.showError('Timeout: No WebRTC peers found for this torrent.');
+                if (this.activeTorrent && this.torrentClient) {
+                    this.torrentClient.remove(this.activeTorrent, { destroyStore: true });
+                    this.activeTorrent = null;
+                }
+            }
+        }, 30000);
+
+        console.log(`🔗 Adding torrent to WebTorrent client...`);
+
+        // Clear the video element before streaming
+        this.video.src = '';
+        this.video.removeAttribute('src');
+        this.video.load();
+
+        this.torrentClient.add(torrentId, (torrent) => {
+            clearTimeout(metadataTimeout);
+            this.activeTorrent = torrent;
+
+            // Pick the largest video-format file
+            let file = torrent.files.find(f => f.name.match(/\.(mp4|mkv|webm|avi|mov)$/i));
+            if (!file) file = torrent.files.reduce((a, b) => a.length > b.length ? a : b);
+            if (!file) {
+                this.isTorrentMode = false;
+                this.showError('No playable video found in torrent.');
+                return;
+            }
+
+            console.log(`🎬 Streaming: ${file.name} (${(file.length / 1024 / 1024).toFixed(1)} MB)`);
+
+            // ─────────────────────────────────────────────────────────────────
+            // True HTTP Streaming via Service Worker Proxy
+            // ─────────────────────────────────────────────────────────────────
+            if (this.hasServiceWorker) {
+                file.streamTo(this.video);
+            } else {
+                // Fallback if Service Worker is unsupported or failed
+                console.warn('Service Worker not active, falling back to Blob download (this will be slow).');
+                this.bufferPercent.textContent = 'Downloading full video...';
+                file.getBlobURL((err, url) => {
+                    if (err) return this.showError(`Blob error: ${err.message}`);
+                    this.activeBlobURL = url;
+                    this.video.src = url;
+                });
+            }
+
+            // Attempt to play automatically (browser autoplay policy applies)
+            this.video.play().catch(playErr => {
+                console.warn('Autoplay blocked:', playErr.message);
+                this.playOverlay.classList.remove('hidden');
+            });
+
+            // Live P2P stats — fires on every downloaded piece
+            torrent.on('download', () => {
+                if (this.networkPeers) this.networkPeers.textContent = torrent.numPeers;
+                this.displayNetworkSpeed(torrent.downloadSpeed);
+                if (this.bufferPercent && this.isTorrentMode) {
+                    this.bufferPercent.textContent = `${(torrent.progress * 100).toFixed(1)}% downloaded`;
+                }
+            });
+
+            torrent.on('done', () => {
+                console.log(`✅ Torrent 100% downloaded.`);
+                if (this.networkSpeed && this.isTorrentMode) {
+                    this.networkSpeed.textContent = 'Complete';
+                    this.networkSpeed.style.color = 'var(--accent-primary)';
+                }
+            });
+        });
+
+        // Deduplicated error handler
+        this.torrentClient.removeAllListeners('error');
+        this.torrentClient.on('error', (err) => {
+            console.error('WebTorrent client error:', err);
+            if (this.isTorrentMode) this.showError(`Torrent Error: ${err.message}`);
+        });
+    }
+
+    // Restores standard player state when leaving a torrent
+    _restoreOriginalVideo() {
+        if (this.peersStat) this.peersStat.style.display = 'none';
+        this.isTorrentMode = false;
+
+        if (this.activeBlobURL) {
+            URL.revokeObjectURL(this.activeBlobURL);
+            this.activeBlobURL = null;
+        }
+    }
+
+
+
+
 
     async checkRangeRequestSupport(url) {
         this.rangeRequestChecked = true;
@@ -744,8 +921,10 @@ class StreamFlowPlayer {
         const aheadSeconds = Math.round(bufferAhead);
         this.bufferPercent.textContent = `${aheadSeconds}s ahead`;
 
-        // Calculate real-time network speed using rolling average
-        this.calculateNetworkSpeed(totalBuffered, now);
+        // Calculate real-time network speed using rolling average (only for HTTP streams)
+        if (!this.activeTorrent) {
+            this.calculateNetworkSpeed(totalBuffered, now);
+        }
     }
 
     calculateNetworkSpeed(totalBuffered, now) {
@@ -1190,6 +1369,29 @@ class StreamFlowPlayer {
         // Stop buffer management
         this.stopBufferManagement();
 
+        // --- Torrent Cleanup on Back ---
+        if (this.activeTorrent && this.torrentClient) {
+            console.log(`🧹 Back button: destroying active torrent.`);
+            this.torrentClient.remove(this.activeTorrent, { destroyStore: true });
+            this.activeTorrent = null;
+        }
+        if (this.activeBlobURL) {
+            URL.revokeObjectURL(this.activeBlobURL);
+            this.activeBlobURL = null;
+        }
+
+        // If torrent mode was active: remove the freshVideo WebTorrent was streaming into,
+        // restore the original video element, reset the mode flag
+        if (this.isTorrentMode) {
+            // this.video now points to freshVideo (the WebTorrent-owned element); kill it
+            if (this.video && this.video !== this._torrentOriginalVideo && this.video.parentNode) {
+                this.video.pause();
+                this.video.src = '';
+                this.video.parentNode.removeChild(this.video);
+            }
+            this._restoreOriginalVideo(); // restores _torrentOriginalVideo, clears isTorrentMode
+        }
+
         // Reset video
         this.video.pause();
         this.video.src = '';
@@ -1229,6 +1431,7 @@ class StreamFlowPlayer {
         this.urlInput.focus();
     }
 
+
     formatTime(seconds) {
         if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
 
@@ -1244,13 +1447,7 @@ class StreamFlowPlayer {
 }
 
 // Initialize player when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.streamFlow = new StreamFlowPlayer();
-});
+// Create global instance (modules are deferred by default, so DOM is ready)
+window.streamFlow = new StreamFlowPlayer();
 
-// Service Worker for offline support (optional enhancement)
-if ('serviceWorker' in navigator) {
-    // Uncomment to enable service worker
-    // navigator.serviceWorker.register('/sw.js');
-}
-
+// End of file

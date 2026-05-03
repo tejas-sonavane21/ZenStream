@@ -35,6 +35,10 @@
                 <span class="logo-text">MyStreamer</span>
             </div>
             <div class="header-stats">
+                <div class="stat" id="peersStat" style="display: none;">
+                    <span class="stat-label">Peers</span>
+                    <span class="stat-value" id="networkPeers">0</span>
+                </div>
                 <div class="stat" id="bufferStat">
                     <span class="stat-label">Buffer</span>
                     <span class="stat-value" id="bufferPercent">0%</span>
@@ -45,6 +49,7 @@
                 </div>
             </div>
         </header>
+
 
         <!-- Main Content -->
         <main class="main-content">
@@ -377,7 +382,7 @@
         </div>
     </div>
 
-    <script src="player.js"></script>
+    <script type="module" src="player.js"></script>
     <script src="supabase-movies.js"></script>
 </body>
 
